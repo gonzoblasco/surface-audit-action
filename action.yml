@@ -101,30 +101,7 @@ runs:
           --output "$REPO_ROOT/.surface-audit-reports"
         CODE=$?
         set -e
-
-        echo "exit-code=$CODE" >> "$GITHUB_OUTPUT"
-
-        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json -newermt '-5 minutes' 2>/dev/null | sort | tail -1 || true)
-        if [ -z "$REPORT" ]; then
-          REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
-        fi
-
-        if [ -z "$REPORT" ]; then
-          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
-          echo "blocking=0" >> "$GITHUB_OUTPUT"
-          echo "warnings=0" >> "$GITHUB_OUTPUT"
-        else
-          node -e '
-            const fs = require("fs");
-            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            const out = process.env.GITHUB_OUTPUT;
-            fs.appendFileSync(out, `verdict=${r.verdict}\n`);
-            fs.appendFileSync(out, `blocking=${r.counts.blocking}\n`);
-            fs.appendFileSync(out, `warnings=${r.counts.warnings}\n`);
-          ' "$REPORT"
-          HTML=$(dirname "$REPORT")/report.html
-          [ -f "$HTML" ] && echo "report-html=$HTML" >> "$GITHUB_OUTPUT"
-        fi
+        node "$ACTION_PATH/scripts/collect.cjs" "$REPO_ROOT/.surface-audit-reports" "$CODE"
 
     - name: Job summary
       if: always()
@@ -133,9 +110,9 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         REPO_ROOT: ${{ github.workspace }}
       run: |
-        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
-        [ -z "$REPORT" ] && { echo "## 🎨 Surface Audit"$'\n\n'"No se emitió reporte." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
-        node "$ACTION_PATH/scripts/markdown.cjs" "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+        set +e
+        node "$ACTION_PATH/scripts/summary.cjs" "$REPO_ROOT/.surface-audit-reports"
+        exit 0
 
     - name: Upload report
       if: always() && inputs.artifact == 'true'
@@ -159,28 +136,9 @@ runs:
         VERDICT: ${{ steps.audit.outputs.verdict }}
         EXIT_CODE: ${{ steps.audit.outputs.exit-code }}
       run: |
-        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
-        BODY_FILE="$RUNNER_TEMP/body.md"
-
-        if [ -z "$REPORT" ]; then
-          printf '<!-- surface-audit -->\n## ❌ Surface Audit — no pudo emitir veredicto\n\nEl pipeline no generó reporte (exit %s). Un stage que no corre bloquea por diseño.\n' "$EXIT_CODE" > "$BODY_FILE"
-        else
-          node "$ACTION_PATH/scripts/comment.cjs" "$REPORT" > "$BODY_FILE"
-        fi
-
-        # Un PR desde un fork corre con token de solo lectura: el comentario es
-        # un extra, no el veredicto. Si falla, se avisa y NO se enmascara el
-        # resultado (el check se decide en el step siguiente).
-        EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
-          --jq '[.[] | select(.body | startswith("<!-- surface-audit -->")) | .id] | first // empty' 2>/dev/null || true)
-
-        if [ -n "$EXISTING" ]; then
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -f body@"$BODY_FILE" >/dev/null \
-            || echo "::warning::No se pudo actualizar el comentario (token de solo lectura, PR desde fork)."
-        else
-          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body@"$BODY_FILE" >/dev/null \
-            || echo "::warning::No se pudo comentar (token de solo lectura, PR desde fork)."
-        fi
+        set +e
+        node "$ACTION_PATH/scripts/pr-comment.cjs" "$REPO_ROOT/.surface-audit-reports"
+        exit 0
 
     - name: Enforce verdict
       if: always()
