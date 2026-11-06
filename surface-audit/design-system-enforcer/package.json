@@ -1,0 +1,30 @@
+{
+  "name": "design-system-enforcer",
+  "version": "1.0.0",
+  "description": "Guardián preventivo del Design System",
+  "main": "src/enforcer.js",
+  "bin": {
+    "design-enforcer": "bin/design-enforcer.js"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "js-yaml": "^4.1.0",
+    "scss-parser": "^1.0.6",
+    "typescript": "^5.2.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "keywords": [
+    "design-system",
+    "enforcement",
+    "accessibility",
+    "tokens",
+    "kanam"
+  ],
+  "author": "Kanam Auditor",
+  "license": "MIT"
+}

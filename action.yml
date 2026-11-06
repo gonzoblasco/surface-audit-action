@@ -1,0 +1,212 @@
+name: Surface Audit
+description: Audita la superficie de un repo (tokens del Design System + veto AI-look) y publica un veredicto único como comentario en el PR.
+
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  config:
+    description: >-
+      Ruta al pipeline config, relativa a la raíz del repo. Si no existe, el
+      action genera una config temporal detectando el directorio fuente.
+    required: false
+    default: .surface-audit/pipeline.config.yaml
+  path:
+    description: >-
+      Directorio fuente a auditar. Solo se usa si `config` no existe.
+      Por defecto se autodetecta (src, app, components, styles o ".").
+    required: false
+    default: ''
+  tokens:
+    description: >-
+      Ruta a un tokens.md del Design System, relativa a la raíz del repo.
+      Si se omite, el enforcer corre sin tabla de tokens (igual reporta hex y
+      veto AI-look, pero no puede sugerir el token exacto).
+    required: false
+    default: ''
+  fail-on:
+    description: >-
+      Veredicto mínimo que hace fallar el check: `blocking` (solo bloqueos),
+      `warning` (también advertencias) o `never` (nunca falla, solo comenta).
+    required: false
+    default: blocking
+  comment:
+    description: Publicar el veredicto como comentario en el PR.
+    required: false
+    default: 'true'
+  artifact:
+    description: Subir el reporte (HTML + JSON) como artifact del run.
+    required: false
+    default: 'true'
+
+outputs:
+  verdict:
+    description: APROBADO | ADVERTENCIA | RECHAZADO
+    value: ${{ steps.audit.outputs.verdict }}
+  exit-code:
+    description: Exit code del pipeline (0 = aprobado/advertencia, 1 = rechazado)
+    value: ${{ steps.audit.outputs.exit-code }}
+  blocking:
+    description: Cantidad de findings bloqueantes
+    value: ${{ steps.audit.outputs.blocking }}
+  warnings:
+    description: Cantidad de advertencias
+    value: ${{ steps.audit.outputs.warnings }}
+  report-html:
+    description: Ruta absoluta al reporte HTML generado
+    value: ${{ steps.audit.outputs.report-html }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install audit engine
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        npm ci --prefix surface-audit/surface-pipeline --omit=dev --silent
+        npm ci --prefix surface-audit/design-system-enforcer --omit=dev --silent
+
+    - name: Resolve config
+      id: cfg
+      shell: bash
+      env:
+        REPO_ROOT: ${{ github.workspace }}
+        CFG_INPUT: ${{ inputs.config }}
+        PATH_INPUT: ${{ inputs.path }}
+        TOKENS_INPUT: ${{ inputs.tokens }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/resolve-config.sh"
+
+    - name: Run surface audit
+      id: audit
+      shell: bash
+      env:
+        REPO_ROOT: ${{ github.workspace }}
+        ACTION_PATH: ${{ github.action_path }}
+        CFG: ${{ steps.cfg.outputs.config }}
+      run: |
+        set +e
+        cd "$REPO_ROOT"
+        node "$ACTION_PATH/surface-audit/surface-pipeline/bin/audit-surface" \
+          --config "$CFG" \
+          --only design-system-enforcer \
+          --format json \
+          --output "$REPO_ROOT/.surface-audit-reports"
+        CODE=$?
+        set -e
+
+        echo "exit-code=$CODE" >> "$GITHUB_OUTPUT"
+
+        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json -newermt '-5 minutes' 2>/dev/null | sort | tail -1 || true)
+        if [ -z "$REPORT" ]; then
+          REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
+        fi
+
+        if [ -z "$REPORT" ]; then
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "blocking=0" >> "$GITHUB_OUTPUT"
+          echo "warnings=0" >> "$GITHUB_OUTPUT"
+        else
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const out = process.env.GITHUB_OUTPUT;
+            fs.appendFileSync(out, `verdict=${r.verdict}\n`);
+            fs.appendFileSync(out, `blocking=${r.counts.blocking}\n`);
+            fs.appendFileSync(out, `warnings=${r.counts.warnings}\n`);
+          ' "$REPORT"
+          HTML=$(dirname "$REPORT")/report.html
+          [ -f "$HTML" ] && echo "report-html=$HTML" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Job summary
+      if: always()
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REPO_ROOT: ${{ github.workspace }}
+      run: |
+        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
+        [ -z "$REPORT" ] && { echo "## 🎨 Surface Audit"$'\n\n'"No se emitió reporte." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+        node "$ACTION_PATH/scripts/markdown.cjs" "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload report
+      if: always() && inputs.artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: surface-audit-report
+        path: |
+          .surface-audit-reports/**/report.html
+          .surface-audit-reports/**/report.json
+        retention-days: 14
+        if-no-files-found: warn
+
+    - name: Comment on PR
+      if: always() && inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ACTION_PATH: ${{ github.action_path }}
+        REPO_ROOT: ${{ github.workspace }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        VERDICT: ${{ steps.audit.outputs.verdict }}
+        EXIT_CODE: ${{ steps.audit.outputs.exit-code }}
+      run: |
+        REPORT=$(find "$REPO_ROOT/.surface-audit-reports" -name report.json 2>/dev/null | sort | tail -1 || true)
+        BODY_FILE="$RUNNER_TEMP/body.md"
+
+        if [ -z "$REPORT" ]; then
+          printf '<!-- surface-audit -->\n## ❌ Surface Audit — no pudo emitir veredicto\n\nEl pipeline no generó reporte (exit %s). Un stage que no corre bloquea por diseño.\n' "$EXIT_CODE" > "$BODY_FILE"
+        else
+          node "$ACTION_PATH/scripts/comment.cjs" "$REPORT" > "$BODY_FILE"
+        fi
+
+        # Un PR desde un fork corre con token de solo lectura: el comentario es
+        # un extra, no el veredicto. Si falla, se avisa y NO se enmascara el
+        # resultado (el check se decide en el step siguiente).
+        EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+          --jq '[.[] | select(.body | startswith("<!-- surface-audit -->")) | .id] | first // empty' 2>/dev/null || true)
+
+        if [ -n "$EXISTING" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -f body@"$BODY_FILE" >/dev/null \
+            || echo "::warning::No se pudo actualizar el comentario (token de solo lectura, PR desde fork)."
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body@"$BODY_FILE" >/dev/null \
+            || echo "::warning::No se pudo comentar (token de solo lectura, PR desde fork)."
+        fi
+
+    - name: Enforce verdict
+      if: always()
+      shell: bash
+      env:
+        VERDICT: ${{ steps.audit.outputs.verdict }}
+        EXIT_CODE: ${{ steps.audit.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+        echo "Surface Audit: verdict=${VERDICT:-ERROR} exit=${EXIT_CODE:-none} fail-on=${FAIL_ON}"
+
+        case "$FAIL_ON" in
+          never)
+            exit 0
+            ;;
+          warning)
+            if [ "$EXIT_CODE" != "0" ] || [ "$VERDICT" = "ADVERTENCIA" ]; then
+              echo "::error::Surface Audit termina en ${VERDICT:-ERROR}: el umbral es warning."
+              exit 1
+            fi
+            ;;
+          blocking|*)
+            if [ "$EXIT_CODE" != "0" ] || [ -z "$VERDICT" ] || [ "$VERDICT" = "ERROR" ]; then
+              echo "::error::Surface Audit termina en ${VERDICT:-ERROR} (exit ${EXIT_CODE:-none})."
+              exit 1
+            fi
+            ;;
+        esac

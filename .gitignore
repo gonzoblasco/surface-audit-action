@@ -1,0 +1,4 @@
+node_modules/
+.surface-audit-reports/
+*.log
+.DS_Store

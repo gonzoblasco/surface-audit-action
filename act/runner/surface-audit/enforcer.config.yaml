@@ -1,0 +1,10 @@
+project:
+  name: "badrepo"
+  design_system_path: null
+rules:
+  enforceTokens: true
+  blockHardcoded: true
+  aiLookVeto: true
+whitelist:
+  hex: []
+exclude: []

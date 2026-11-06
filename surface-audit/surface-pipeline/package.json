@@ -1,0 +1,30 @@
+{
+  "name": "surface-pipeline",
+  "version": "0.1.0",
+  "description": "Pipeline unificado de auditoría de superficie: orquesta design-system-enforcer + accessibility-oracle + pixel-diff y emite un veredicto único con evidencia",
+  "main": "src/pipeline.js",
+  "bin": {
+    "audit-surface": "bin/audit-surface"
+  },
+  "scripts": {
+    "test": "jest",
+    "audit": "node bin/audit-surface"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "keywords": [
+    "audit",
+    "pipeline",
+    "design-system",
+    "accessibility",
+    "pixel-diff",
+    "kanam"
+  ],
+  "author": "Kanam Auditor",
+  "license": "MIT"
+}

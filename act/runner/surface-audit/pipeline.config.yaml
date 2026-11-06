@@ -1,0 +1,13 @@
+project:
+  name: "badrepo"
+stages:
+  - skill: design-system-enforcer
+    path: "src"
+    config: "/tmp/saa/act/runner/surface-audit/enforcer.config.yaml"
+gate:
+  block_on: ["critical", "stage-error"]
+  warn_on: ["warning", "ai-look", "hardcoded-value", "misaligned"]
+on_stage_error: block
+output:
+  dir: "/tmp/saa/act/runner/surface-audit/reports"
+  formats: [json, html]

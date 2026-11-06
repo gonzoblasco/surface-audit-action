@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+
+/**
+ * surface-pipeline CLI
+ * Uso: npx audit-surface [options]
+ *
+ *   audit-surface --config .kanam/pipeline.config.yaml
+ *   audit-surface --only design-system-enforcer        # un stage
+ *   audit-surface --format html --output ./reports
+ *   audit-surface --strict                              # warning también falla
+ */
+
+const { program } = require('commander');
+const path = require('path');
+const { SurfacePipeline } = require('../src/pipeline');
+
+program
+  .name('audit-surface')
+  .description('Pipeline unificado: enforcer + oracle + pixel-diff → un veredicto')
+  .version('0.1.0')
+  .option('-c, --config <path>', 'Ruta a la config del pipeline', '.kanam/pipeline.config.yaml')
+  .option('-f, --format <type>', 'Formato de salida (console|json|html)', 'console')
+  .option('-o, --output <dir>', 'Directorio de reportes')
+  .option('--only <skills>', 'Lista separada por comas de skills a ejecutar')
+    .option('--strict', 'Falla también con advertencias (exit 1 en warning)', false)
+  .parse();
+
+const options = program.opts();
+
+async function main() {
+  const only = options.only
+    ? options.only.split(',').map((s) => s.trim()).filter(Boolean)
+    : null;
+
+  const pipeline = new SurfacePipeline({
+    cwd: process.cwd(),
+    configPath: options.config ? path.resolve(process.cwd(), options.config) : undefined,
+    format: options.format,
+    outputDir: options.output ? path.resolve(process.cwd(), options.output) : undefined,
+    only
+  });
+
+  const result = await pipeline.run();
+  console.log(result.report);
+
+  const code = options.strict ? result.strictExitCode : result.exitCode;
+  process.exit(code);
+}
+
+main().catch((err) => {
+  console.error(`\n❌ surface-pipeline: ${err.message}\n`);
+  process.exit(1);
+});

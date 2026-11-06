@@ -1,0 +1,2 @@
+config=/tmp/saa/act/runner/surface-audit/pipeline.config.yaml
+modo=autodetectada (target: src)
